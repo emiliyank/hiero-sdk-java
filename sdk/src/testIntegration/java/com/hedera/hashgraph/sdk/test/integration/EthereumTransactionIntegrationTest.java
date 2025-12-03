@@ -17,6 +17,7 @@ import com.hedera.hashgraph.sdk.PrivateKey;
 import com.hedera.hashgraph.sdk.PrivateKeyECDSA;
 import com.hedera.hashgraph.sdk.TransferTransaction;
 import java.math.BigInteger;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import org.bouncycastle.util.encoders.Hex;
@@ -31,6 +32,8 @@ public class EthereumTransactionIntegrationTest {
     private static final String SMART_CONTRACT_BYTECODE_JUMBO =
             "6080604052348015600e575f5ffd5b506101828061001c5f395ff3fe608060405234801561000f575f5ffd5b5060043610610029575f3560e01c80631e0a3f051461002d575b5f5ffd5b610047600480360381019061004291906100d0565b61005d565b6040516100549190610133565b60405180910390f35b5f5f905092915050565b5f5ffd5b5f5ffd5b5f5ffd5b5f5ffd5b5f5ffd5b5f5f83601f8401126100905761008f61006f565b5b8235905067ffffffffffffffff8111156100ad576100ac610073565b5b6020830191508360018202830111156100c9576100c8610077565b5b9250929050565b5f5f602083850312156100e6576100e5610067565b5b5f83013567ffffffffffffffff8111156101035761010261006b565b5b61010f8582860161007b565b92509250509250929050565b5f819050919050565b61012d8161011b565b82525050565b5f6020820190506101465f830184610124565b9291505056fea26469706673582212202829ebd1cf38c443e4fd3770cd4306ac4c6bb9ac2828074ae2b9cd16121fcfea64736f6c634300081e0033";
 
+    private static final String EMPTY_CONTRACT_BYTECODE =
+            "608060405234801561001057600080fd5b5060b88061001f6000396000f3fe6080604052348015600f57600080fd5b506004361060285760003560e01c8063f8a8fd6d14602d575b600080fd5b60336047565b604051603e9190605d565b60405180910390f35b60006001905090565b6057816076565b82525050565b6000602082019050607060008301846050565b92915050565b6000811515905091905056fea2646970667358221220b4a7b9f1eedd2080ba6dc510555bb650f1ab8aa6ee958ba753ad2cd1665559bd64736f6c63430008000033";
     /**
      * @notice E2E-HIP-844
      * @url https://hips.hedera.com/hip/hip-844
@@ -215,6 +218,125 @@ public class EthereumTransactionIntegrationTest {
                             callData,
                             List.of(/*accessList*/ ),
                             Integers.toBytes(recId), // recId
+                            r,
+                            s));
+
+            EthereumTransaction ethereumTransaction = new EthereumTransaction().setEthereumData(ethereumData);
+            var ethereumTransactionResponse = ethereumTransaction.execute(testEnv.client);
+            var ethereumTransactionRecord = ethereumTransactionResponse.getRecord(testEnv.client);
+
+            assertThat(ethereumTransactionRecord.contractFunctionResult.signerNonce)
+                    .isEqualTo(1);
+
+            new ContractDeleteTransaction()
+                    .setTransferAccountId(testEnv.operatorId)
+                    .setContractId(contractId)
+                    .execute(testEnv.client)
+                    .getReceipt(testEnv.client);
+
+            new FileDeleteTransaction()
+                    .setFileId(fileId)
+                    .execute(testEnv.client)
+                    .getReceipt(testEnv.client);
+        }
+    }
+
+    @Test
+    @DisplayName("EIP-7702 Ethereum transaction with authorization list")
+    void eip7702EthereumTransactionWithAuthorizationList() throws Exception {
+        try (var testEnv = new IntegrationTestEnv(1)) {
+            var privateKey = PrivateKey.generateECDSA();
+            var newAccountAliasId = privateKey.toAccountId(0, 0);
+
+            new TransferTransaction()
+                    .addHbarTransfer(testEnv.operatorId, new Hbar(10).negated())
+                    .addHbarTransfer(newAccountAliasId, new Hbar(10))
+                    .execute(testEnv.client)
+                    .getReceipt(testEnv.client);
+
+            var fileCreateTransactionResponse = new FileCreateTransaction()
+                    .setKeys(testEnv.operatorKey)
+                    .setContents(EMPTY_CONTRACT_BYTECODE)
+                    .setMaxTransactionFee(new Hbar(2))
+                    .execute(testEnv.client);
+
+            var fileId = Objects.requireNonNull(fileCreateTransactionResponse.getReceipt(testEnv.client).fileId);
+
+            var contractCreateTransactionResponse = new ContractCreateTransaction()
+                    .setAdminKey(testEnv.operatorKey)
+                    .setGas(300000)
+                    .setBytecodeFileId(fileId)
+                    .setContractMemo("[e2e::ContractCreateTransaction]")
+                    .execute(testEnv.client);
+
+            var contractId =
+                    Objects.requireNonNull(contractCreateTransactionResponse.getReceipt(testEnv.client).contractId);
+
+            int nonce = 0;
+            byte[] chainId = Hex.decode("012a");
+            byte[] maxPriorityGas = Hex.decode("00");
+            byte[] maxGas = Hex.decode("d1385c7bf0");
+            byte[] gasLimitBytes = Hex.decode("07A120");
+            byte[] to = Hex.decode(contractId.toEvmAddress());
+            byte[] value = Integers.toBytesUnsigned(BigInteger.ONE);
+            byte[] callData = new ContractExecuteTransaction()
+                    .setFunction("test", new ContractFunctionParameters())
+                    .getFunctionParameters()
+                    .toByteArray();
+
+            byte[] authorizationNonce = Integers.toBytesUnsigned(BigInteger.valueOf(nonce));
+            byte[] authorizationPayload = RLPEncoder.sequence(chainId, to, authorizationNonce);
+            byte[] authorizationMessage = new byte[1 + authorizationPayload.length];
+            authorizationMessage[0] = 0x05;
+            System.arraycopy(authorizationPayload, 0, authorizationMessage, 1, authorizationPayload.length);
+
+            byte[] authorizationSignature = privateKey.sign(authorizationMessage);
+            final byte[] authorizationR = Arrays.copyOfRange(authorizationSignature, 0, 32);
+            final byte[] authorizationS = Arrays.copyOfRange(authorizationSignature, 32, 64);
+            final int authorizationRecId =
+                    ((PrivateKeyECDSA) privateKey).getRecoveryId(authorizationR, authorizationS, authorizationMessage);
+
+            List<Object> encodedAuthorizationList = List.of(List.of(
+                    chainId,
+                    to,
+                    authorizationNonce,
+                    Integers.toBytes(authorizationRecId),
+                    authorizationR,
+                    authorizationS));
+
+            var sequence = RLPEncoder.sequence(
+                    Integers.toBytes(4),
+                    List.of(
+                            chainId,
+                            Integers.toBytes(nonce),
+                            maxPriorityGas,
+                            maxGas,
+                            gasLimitBytes,
+                            to,
+                            value,
+                            callData,
+                            List.of(),
+                            encodedAuthorizationList));
+
+            byte[] signedBytes = privateKey.sign(sequence);
+            final byte[] r = Arrays.copyOfRange(signedBytes, 0, 32);
+            final byte[] s = Arrays.copyOfRange(signedBytes, 32, 64);
+            final int recId = ((PrivateKeyECDSA) privateKey).getRecoveryId(r, s, sequence);
+
+            byte[] ethereumData = RLPEncoder.sequence(
+                    Integers.toBytes(0x04),
+                    List.of(
+                            chainId,
+                            Integers.toBytes(nonce),
+                            maxPriorityGas,
+                            maxGas,
+                            gasLimitBytes,
+                            to,
+                            value,
+                            callData,
+                            List.of(),
+                            encodedAuthorizationList,
+                            Integers.toBytes(recId),
                             r,
                             s));
 
