@@ -119,4 +119,79 @@ public class EthereumTransactionDataEip7702Test {
         assertThat(EthereumTransactionDataEip7702.fromBytes(manualBytes).toBytes())
                 .containsExactly(manualBytes);
     }
+
+    @Test
+    void toBytesAndFromBytesPreserveAllFieldValues() {
+        // 1. Setup Data
+        var chainId = Hex.decode("012a");
+        var nonce = Hex.decode("00");
+        var maxPriorityGas = Hex.decode("01");
+        var maxGas = Hex.decode("d1385c7bf0");
+        var gasLimit = Hex.decode("07A120");
+        var to = Hex.decode("00000000000000000000000000000000000003f9");
+        var value = new byte[0]; // Empty value
+        var callData = Hex.decode("123456");
+        List<byte[]> accessList = List.of(); // Empty access list
+        var recId = Hex.decode("01");
+        var r = Hex.decode("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+        var s = Hex.decode("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
+
+        // Authorization List setup
+        var authChainId = Hex.decode("012a");
+        var authAddress = Hex.decode("00000000000000000000000000000000000003f9");
+        var authNonce = Hex.decode("00");
+        var authYParity = Hex.decode("01");
+        var authR = Hex.decode("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
+        var authS = Hex.decode("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+
+        // Use AuthorizationTuple
+        var authData = new EthereumTransactionDataEip7702.AuthorizationTuple(
+                authChainId, authAddress, authNonce, authYParity, authR, authS);
+
+        // 2. Create Instance
+        var original = new EthereumTransactionDataEip7702(
+                chainId,
+                nonce,
+                maxPriorityGas,
+                maxGas,
+                gasLimit,
+                to,
+                value,
+                callData,
+                accessList,
+                List.of(authData), // authorizationList
+                recId,
+                r,
+                s);
+
+        // 3. Round Trip
+        var bytes = original.toBytes();
+        var decoded = EthereumTransactionDataEip7702.fromBytes(bytes);
+
+        // 4. Assertions
+        assertThat(decoded.chainId).containsExactly(chainId);
+        assertThat(decoded.nonce).containsExactly(nonce);
+        assertThat(decoded.maxPriorityGas).containsExactly(maxPriorityGas);
+        assertThat(decoded.maxGas).containsExactly(maxGas);
+        assertThat(decoded.gasLimit).containsExactly(gasLimit);
+        assertThat(decoded.to).containsExactly(to);
+        assertThat(decoded.value).containsExactly(value);
+        assertThat(decoded.callData).containsExactly(callData);
+        assertThat(decoded.recoveryId).containsExactly(recId);
+        assertThat(decoded.r).containsExactly(r);
+        assertThat(decoded.s).containsExactly(s);
+
+        assertThat(decoded.authorizationList).hasSize(1);
+
+        var decodedAuth = decoded.authorizationList.get(0);
+        assertThat(decodedAuth.chainId).containsExactly(authChainId);
+        assertThat(decodedAuth.address).containsExactly(authAddress);
+        assertThat(decodedAuth.nonce).containsExactly(authNonce);
+        assertThat(decodedAuth.yParity).containsExactly(authYParity);
+        assertThat(decodedAuth.r).containsExactly(authR);
+        assertThat(decodedAuth.s).containsExactly(authS);
+
+        // Verify the byte array matches exactly
+        assertThat(decoded.toBytes()).containsExactly(bytes);
+    }
 }
